@@ -9,13 +9,14 @@
 # Licence:     <your licence>
 #-------------------------------------------------------------------------------
 import krpc
-from multiprocessing import Process, Value, Array, Manager, Pipe
+from multiprocessing import Process, Value, Array, Manager, Pipe, connection
 import time
 import datetime
 import operator #Allow strings to be converted to class attributes
 import traceback
 import math
 from tkinter import *
+import tkinter.font as tkFont
 from tkinter.ttk import *
 import sys
 from collections import OrderedDict
@@ -184,6 +185,7 @@ def auto_pilot(flight_dict, vessel_dict, orbit_dict, body_dict, ksc_dict, gui_pi
 ##            print(str(orbit_dict["apoapsis"]) + " " + str(target_alt))
 ##            follow_heading(90)
         vessel.control.throttle = 0
+        gui_pipe.send("Apoapsis is at target altitude")
         conn.space_center.physics_warp_factor = 3
         while(flight_dict["mean_altitude"] <= body_dict["atmosphere_depth"] + 100):
             time.sleep(1)
@@ -236,6 +238,7 @@ def auto_pilot(flight_dict, vessel_dict, orbit_dict, body_dict, ksc_dict, gui_pi
         time.sleep(0.1)
 
     def execute_maneuver_nodes():
+        gui_pipe.send("Executing Node(s)")
         node_list = vessel.control.nodes
         for node in node_list:
             delta_v = node.delta_v
@@ -249,17 +252,20 @@ def auto_pilot(flight_dict, vessel_dict, orbit_dict, body_dict, ksc_dict, gui_pi
             time.sleep(abs(burn_time - 0.1))
             vessel.control.throttle = 0
             node.remove()
+        gui_pipe.send("All nodes complete")
 
     def launch_sequence():
-        cur_stage = conn.space_center.active_vessel.control.current_stage
+        gui_pipe.send("Launching")
         launch()
         stage_at_empty(1)
         vessel.control.throttle = 1
         stage_at_empty(1)
         climb_to_orbit(2000)
+        gui_pipe.send("Circularizing Orbit")
         circularize_orbit_to_apoapsis()
+        gui_pipe.send("Orbit Circularized - Launch Complete")
 
-    dispatch_dict = {"Launch": launch_sequence}
+    dispatch_dict = {"Launch": launch_sequence, "Nodes": execute_maneuver_nodes}
 
     while kill_flag.value == 0:
         if(gui_pipe.poll(0.1)):
@@ -306,8 +312,6 @@ def spam_science(stream_flight_dict, stream_vessel_dict, gui_pipe, kill_flag):
 def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_dict, stream_ksc_dict):
         def Launch():
             gui_to_auto.send("Launch")
-            for key, button in button_dict.items():
-                button_dict[key]["state"] = "enable"
 
         def Execute_Nodes():
             gui_to_auto.send("Nodes")
@@ -327,10 +331,17 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
         def Circularize_to_Periapsis():
             gui_to_auto.send("Circularize_to_Periapsis")
 
-        def Quit():
-            kill_process()
-            master.destroy()
-            sys.exit()
+        def update():
+            connArray = []
+            if(gui_to_auto.poll(0.1)):
+                reply = gui_to_auto.recv()
+                flight_status_label['text'] = "Flight: " + str(reply)
+            if(gui_to_science.poll(0.1)):
+                reply = gui_to_science.recv()
+                science_status_label['text'] = "Science: " + str(reply)
+
+            master.after(1000, update) #Calls the function again after delay in GUI main loop
+
 
         def kill_process():
             kill_flag.value = 1
@@ -340,6 +351,11 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
             server_process.join() #Verify that process is terminated
             autopilot_process.join()
             science_process.join()
+
+        def Quit():
+            kill_process()
+            master.destroy()
+            sys.exit()
 
         #Start data stream
         kill_flag = Value('i', 0)
@@ -360,15 +376,16 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
 
         except KeyboardInterrupt:
             kill_process()
+            master.destroy()
+            sys.exit()
 
         #Make GUI
         master = Tk()
         style = Style()
-        style.configure('TButton', font =
-                       ('calibri', 20, 'bold'),
-                            borderwidth = '4')
-        style.map('TButton', foreground = [('active', '!disabled', 'green')],
-                     background = [('active', 'black')])
+        style.configure('TButton', font =('Lucida Grande', 20, 'bold'), borderwidth = '4')
+        style.map('TButton', foreground = [('active', '!disabled', 'green')], background = [('active', 'black')])
+        label_font_style = tkFont.Font(family="Lucida Grande", size=16) #Font for labels
+
         master.title("Ship Control")
 
         #Create master set of buttons
@@ -381,12 +398,14 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
             button_dict[key] = Button(master, textvariable=button_text[key], command=func)
             button_text[key].set(key)
             button_dict[key].grid(column=0, row=grid_index, padx=10, pady=10)
-            if key in ["Launch", "Spam Science", "Quit"]:
-                button_dict[key]["state"] = "enable"
-            else:
-                button_dict[key]["state"] = "disabled"
-
             grid_index += 1
+        flight_status_label = Label(master, text = "Flight: On Pad", font = label_font_style)
+        flight_status_label.grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
+        science_status_label = Label(master, text = "Science: Science Off", font = label_font_style)
+        science_status_label.grid(column=0, row=grid_index, padx=10, pady=10)
+        update()
+        print("hi")
         master.mainloop()
 
 
