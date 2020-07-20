@@ -192,7 +192,7 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
 ##                  try:
                     while e.part.engine.has_fuel and kill_flag.value == 0:
                         time.sleep(0.1)
-                        follow_heading(90)
+                        follow_heading(launch_heading)
 ##                  except:
                     print("Engine is already gone")
         vessel.control.yaw = 0
@@ -204,8 +204,6 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         target_alt = body.equatorial_radius + body.atmosphere_depth + offset
         while(orbit.apoapsis < target_alt and kill_flag.value == 0):
             time.sleep(0.1)
-##            print(str(orbit_dict["apoapsis"]) + " " + str(target_alt))
-##            follow_heading(90)
         vessel.control.throttle = 0
         gui_pipe.send("Apoapsis is at target altitude")
         conn.space_center.physics_warp_factor = 3
@@ -351,17 +349,19 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         else:
             gui_pipe.send("Burn node not found")
 
-    def launch_sequence():
-        execute_maneuver_nodes()
-        return
+    def launch_sequence(heading):
+        nonlocal launch_heading
         gui_pipe.send("Launching")
+        if(str(heading).isdecimal):
+            launch_heading = int(heading)
+            launch_heading %= 360
         launch()
         stage_at_empty(1)
         vessel.control.throttle = 1
         stage_at_empty(1)
         climb_to_orbit(2000)
         gui_pipe.send("Circularizing Orbit")
-        change_periapsis(orbit.apoapsis)
+        change_periapsis("apoapasis")
         gui_pipe.send("Orbit Circularized")
         deploy_parts()
         gui_pipe.send("Parts Deployed - Launch Complete")
@@ -369,10 +369,11 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
 
     dispatch_dict = {"Launch": launch_sequence, "Nodes": execute_maneuver_nodes, "Suicide Burn": suicide_burn, "Change Apoapsis": change_apoapsis, "Change Periapsis": change_periapsis}
     lead_time = 10
+    launch_heading = None
     while kill_flag.value == 0:
         if(gui_pipe.poll(0.1)):
             func_string = gui_pipe.recv()
-            if(func_string in ["Change Periapsis", "Change Apoapsis"]):
+            if(func_string in ["Launch", "Change Periapsis", "Change Apoapsis"]):
                 arg = gui_pipe.recv()
                 dispatch_dict[func_string](arg)
             else:
@@ -408,7 +409,7 @@ def spam_science(gui_pipe, kill_flag):
     science_on = False
 
     while(kill_flag.value == 0):
-        if(gui_pipe.poll(0.1)):
+        if(gui_pipe.poll(0.5)):
             science_on = gui_pipe.recv()
         if(vessel.biome != prev_biome):
             print("Transition biome: " + str(prev_biome) + " to " + vessel.biome)
@@ -419,6 +420,7 @@ def spam_science(gui_pipe, kill_flag):
 def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_dict, stream_ksc_dict):
         def Launch():
             gui_to_auto.send("Launch")
+            gui_to_auto.send(str(Heading_Box.get()))
 
         def Execute_Nodes():
             gui_to_auto.send("Nodes")
@@ -515,14 +517,22 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
             button_dict[key].grid(column=0, row=grid_index, padx=10, pady=10)
             grid_index += 1
 
+        Label(master, text="Launch Heading", font = label_font_style).grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
+        Heading_Box =  Entry(master, font = label_font_style)
+        Heading_Box.insert(INSERT, "90")
+        Heading_Box.grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
         Label(master, text="Target Apoapsis", font = label_font_style).grid(column=0, row=grid_index, padx=10, pady=10)
         grid_index += 1
         Apoapsis_Box =  Entry(master, font = label_font_style)
+        Apoapsis_Box.insert(INSERT, "periapsis")
         Apoapsis_Box.grid(column=0, row=grid_index, padx=10, pady=10)
         grid_index += 1
         Label(master, text="Target Periapsis", font = label_font_style).grid(column=0, row=grid_index, padx=10, pady=10)
         grid_index += 1
         Periapsis_Box =  Entry(master, font = label_font_style)
+        Periapsis_Box.insert(INSERT, "apoapsis")
         Periapsis_Box.grid(column=0, row=grid_index, padx=10, pady=10)
         grid_index += 1
 
