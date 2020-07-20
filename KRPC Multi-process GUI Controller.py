@@ -95,7 +95,7 @@ def server_stream(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, str
         print("Stream process error")
 
 def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
-##def auto_pilot(flight_dict, ksc_dict):
+#def auto_pilot(flight_dict, ksc_dict):
     conn = krpc.connect(name='Autopilot')
     vessel = conn.space_center.active_vessel
     orbit = vessel.orbit
@@ -147,13 +147,11 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
             vessel.control.yaw = 0
         level_plane()
 
-    def calc_delta_v(target_radius): #https://krpc.github.io/krpc/tutorials/launch-into-orbit.html
+    def calc_delta_v(r, a2): #https://krpc.github.io/krpc/tutorials/launch-into-orbit.html
         mu = body.gravitational_parameter
-        r = orbit.apoapsis
         a1 = orbit.semi_major_axis
-        a2 = target_radius
-        v1 = math.sqrt(mu*((2./r)-(1./a1)))
-        v2 = math.sqrt(mu*((2./r)-(1./a2)))
+        v1 = math.sqrt(abs(mu*((2./r)-(1./a1))))
+        v2 = math.sqrt(abs(mu*((2./r)-(1./a2))))
         delta_v = v2 - v1
         return delta_v
 
@@ -166,6 +164,15 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         burn_time = (m0 - m1) / flow_rate
         return burn_time
 
+    def set_sas(mode):
+        try:
+            ap.sas_mode = operator.attrgetter("sas_mode." + str(mode))(ap)
+        except:
+            try:
+                ap.sas_mode = ap.sas_mode.stability_assist
+            except:
+                gui_pipe.send("Manual targetting")
+
 ################################################
 
     def launch():
@@ -177,7 +184,7 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         time.sleep(0.1)
         vessel.control.activate_next_stage()
         time.sleep(0.1)
-        ap.sas_mode = ap.sas_mode.prograde
+        set_sas("prograde")
         ap.target_heading = 90
 
     def stage_at_empty(offset):
@@ -208,15 +215,44 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         while(flight_dict["mean_altitude"]() <= body.atmosphere_depth + 100):
             time.sleep(1)
 
-    def circularize_orbit_to_apoapsis():
-        delta_v = calc_delta_v(orbit.apoapsis)
+    def change_periapsis(target):
+        target_major_axis = orbit.semi_major_axis + (target - orbit.periapsis)/2
+        delta_v = calc_delta_v(orbit.apoapsis, target_major_axis)
         node = vessel.control.add_node(ksc_dict["ut"]() + vessel.orbit.time_to_apoapsis, prograde=delta_v) #Add navigation node
-        print("Delta-v node added")
-        burn_time = calc_burn_time(delta_v)
+        burn_time = abs(calc_burn_time(delta_v))
         burn_ut = ksc_dict["ut"]() + orbit.time_to_apoapsis - (burn_time/2.)
-        lead_time = 5
+        lead_time = 10
+        if(delta_v > 0):
+            set_sas("prograde")
+        elif(delta_v < 0):
+            set_sas("retrograde")
+        else:
+            node.remove()
+            return
         conn.space_center.warp_to(burn_ut - lead_time)
         while orbit.time_to_apoapsis - (burn_time/2.) > 0 and kill_flag.value == 0:
+            time.sleep(0.1)
+        vessel.control.throttle = 1.0
+        time.sleep(burn_time - 0.1)
+        vessel.control.throttle = 0
+        node.remove()
+
+    def change_apoapsis(target):
+        target_major_axis = orbit.semi_major_axis + (target - orbit.apoapsis)/2
+        delta_v = calc_delta_v(orbit.periapsis, target_major_axis)
+        node = vessel.control.add_node(ksc_dict["ut"]() + vessel.orbit.time_to_periapsis, prograde=delta_v) #Add navigation node
+        burn_time = abs(calc_burn_time(delta_v))
+        burn_ut = ksc_dict["ut"]() + orbit.time_to_periapsis - (burn_time/2.)
+        lead_time = 10
+        if(delta_v > 0):
+            set_sas("prograde")
+        elif(delta_v < 0):
+            set_sas("retrograde")
+        else:
+            node.remove()
+            return
+        conn.space_center.warp_to(burn_ut - lead_time)
+        while orbit.time_to_periapsis - (burn_time/2.) > 0 and kill_flag.value == 0:
             time.sleep(0.1)
         vessel.control.throttle = 1.0
         time.sleep(burn_time - 0.1)
@@ -279,6 +315,8 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         gui_pipe.send("All nodes complete")
 
     def launch_sequence():
+        change_apoapsis(orbit.periapsis)
+        return
         gui_pipe.send("Launching")
         launch()
         stage_at_empty(1)
@@ -286,7 +324,7 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         stage_at_empty(1)
         climb_to_orbit(2000)
         gui_pipe.send("Circularizing Orbit")
-        circularize_orbit_to_apoapsis()
+        change_periapsis(orbit.apoapsis)
         gui_pipe.send("Orbit Circularized")
         deploy_parts()
         gui_pipe.send("Parts Deployed - Launch Complete")
@@ -364,9 +402,12 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
             if(gui_to_auto.poll(0.1)):
                 reply = gui_to_auto.recv()
                 flight_status_label['text'] = "Flight: " + str(reply)
+                print(str(reply))
+
             if(gui_to_science.poll(0.1)):
-                reply = gui_to_science.recv()
+                print(str(reply))
                 science_status_label['text'] = "Science: " + str(reply)
+
 
             master.after(1000, update) #Calls the function again after delay in GUI main loop
 
