@@ -168,10 +168,7 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         try:
             ap.sas_mode = operator.attrgetter("sas_mode." + str(mode))(ap)
         except:
-            try:
-                ap.sas_mode = ap.sas_mode.stability_assist
-            except:
-                gui_pipe.send("Manual targetting")
+            gui_pipe.send("SAS \"" + mode + "\" is currently unavailable.")
 
 ################################################
 
@@ -216,6 +213,16 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
             time.sleep(1)
 
     def change_periapsis(target):
+        target_string = str(target).lower()
+        if(target_string.startswith("a")):
+            target = orbit.apoapsis
+        elif(target_string.isnumeric()):
+            target = int(target_string)
+            target += orbit.body.equatorial_radius
+        else:
+            gui_pipe.send("Invalid periapsis")
+            return
+
         target_major_axis = orbit.semi_major_axis + (target - orbit.periapsis)/2
         delta_v = calc_delta_v(orbit.apoapsis, target_major_axis)
         node = vessel.control.add_node(ksc_dict["ut"]() + vessel.orbit.time_to_apoapsis, prograde=delta_v) #Add navigation node
@@ -238,6 +245,16 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         node.remove()
 
     def change_apoapsis(target):
+        target_string = str(target).lower()
+        if(target_string.startswith("p")):
+            target = orbit.periapsis
+        elif(target_string.isnumeric()):
+            target = int(target_string)
+            target += orbit.body.equatorial_radius
+        else:
+            gui_pipe.send("Invalid apoapsis")
+            return
+
         target_major_axis = orbit.semi_major_axis + (target - orbit.apoapsis)/2
         delta_v = calc_delta_v(orbit.periapsis, target_major_axis)
         node = vessel.control.add_node(ksc_dict["ut"]() + vessel.orbit.time_to_periapsis, prograde=delta_v) #Add navigation node
@@ -301,10 +318,10 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         gui_pipe.send("Executing Node(s)")
         node_list = vessel.control.nodes
         for node in node_list:
+            set_sas("target")
             delta_v = node.delta_v
             burn_time = calc_burn_time(delta_v)
             burn_ut = node.ut - (burn_time/2.)
-            lead_time = 5
             conn.space_center.warp_to(burn_ut - lead_time)
             while ksc_dict["ut"]() < burn_ut and kill_flag.value == 0:
                 time.sleep(0.1)
@@ -314,8 +331,28 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
             node.remove()
         gui_pipe.send("All nodes complete")
 
+    def suicide_burn():
+        gui_pipe.send("Executing Node(s)")
+        node_list = vessel.control.nodes
+        buffer = 10
+        if node_list is not None:
+            node = node_list[0]
+            set_sas("retrograde")
+            delta_v = node.delta_v
+            burn_time = calc_burn_time(delta_v)
+            burn_ut = node.ut - (burn_time + buffer)
+            conn.space_center.warp_to(burn_ut - lead_time)
+            while ksc_dict["ut"]() < burn_ut and kill_flag.value == 0:
+                time.sleep(0.1)
+            vessel.control.throttle = 1.0
+            time.sleep(abs(burn_time - 0.1))
+            vessel.control.throttle = 0
+            node.remove()
+        else:
+            gui_pipe.send("Burn node not found")
+
     def launch_sequence():
-        change_apoapsis(orbit.periapsis)
+        execute_maneuver_nodes()
         return
         gui_pipe.send("Launching")
         launch()
@@ -330,12 +367,16 @@ def auto_pilot(flight_dict, ksc_dict, gui_pipe, kill_flag):
         gui_pipe.send("Parts Deployed - Launch Complete")
 
 
-    dispatch_dict = {"Launch": launch_sequence, "Nodes": execute_maneuver_nodes}
-
+    dispatch_dict = {"Launch": launch_sequence, "Nodes": execute_maneuver_nodes, "Suicide Burn": suicide_burn, "Change Apoapsis": change_apoapsis, "Change Periapsis": change_periapsis}
+    lead_time = 10
     while kill_flag.value == 0:
         if(gui_pipe.poll(0.1)):
             func_string = gui_pipe.recv()
-            dispatch_dict[func_string]()
+            if(func_string in ["Change Periapsis", "Change Apoapsis"]):
+                arg = gui_pipe.recv()
+                dispatch_dict[func_string](arg)
+            else:
+                dispatch_dict[func_string]()
 
     print("Autopilot stream fail")
 
@@ -392,10 +433,15 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
                 button_text["Spam Science"].set("Spam Science")
 
         def Suicide_Burn():
-            gui_to_auto.send("Suicide_Burn")
+            gui_to_auto.send("Suicide Burn")
 
-        def Circularize_to_Periapsis():
-            gui_to_auto.send("Circularize_to_Periapsis")
+        def Change_Periapsis():
+            gui_to_auto.send("Change Periapsis")
+            gui_to_auto.send(str(Periapsis_Box.get()))
+
+        def Change_Apoapsis():
+            gui_to_auto.send("Change Apoapsis")
+            gui_to_auto.send(str(Apoapsis_Box.get()))
 
         def update():
             connArray = []
@@ -458,7 +504,7 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
         master.title("Ship Control")
 
         #Create master set of buttons
-        button_func = OrderedDict([("Launch", Launch), ("Execute Nodes", Execute_Nodes), ("Spam Science", Spam_Science), ("Suicide Burn", Suicide_Burn), ("Circularize to Periapsis", Circularize_to_Periapsis), ("Quit", Quit)])
+        button_func = OrderedDict([("Launch", Launch), ("Execute Nodes", Execute_Nodes), ("Spam Science", Spam_Science), ("Suicide Burn", Suicide_Burn), ("Change Periapsis", Change_Periapsis), ("Change Apoapsis", Change_Apoapsis),("Quit", Quit)])
         button_dict = OrderedDict()
         button_text = OrderedDict()
         grid_index = 0
@@ -468,6 +514,19 @@ def GUI(stream_flight_dict, stream_vessel_dict, stream_orbit_dict, stream_body_d
             button_text[key].set(key)
             button_dict[key].grid(column=0, row=grid_index, padx=10, pady=10)
             grid_index += 1
+
+        Label(master, text="Target Apoapsis", font = label_font_style).grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
+        Apoapsis_Box =  Entry(master, font = label_font_style)
+        Apoapsis_Box.grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
+        Label(master, text="Target Periapsis", font = label_font_style).grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
+        Periapsis_Box =  Entry(master, font = label_font_style)
+        Periapsis_Box.grid(column=0, row=grid_index, padx=10, pady=10)
+        grid_index += 1
+
+        #Add status labels
         flight_status_label = Label(master, text = "Flight: On Pad", font = label_font_style)
         flight_status_label.grid(column=0, row=grid_index, padx=10, pady=10)
         grid_index += 1
